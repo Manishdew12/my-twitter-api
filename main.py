@@ -1,71 +1,41 @@
 from fastapi import FastAPI, HTTPException
-from twikit import Client
-import asyncio
-import os
+from ntscraper import Nitter
+import uvicorn
 
 app = FastAPI()
+scraper = Nitter(log_level=1)
 
-# --- CONFIGURATION (Load from Environment Variables) ---
-USERNAME = os.getenv("TWITTER_USERNAME")
-EMAIL = os.getenv("TWITTER_EMAIL")
-PASSWORD = os.getenv("TWITTER_PASSWORD")
+@app.get("/")
+def home():
+    return {"status": "Twitter Scraper API is Running 🚀"}
 
-# Cookies path (Persistent Volume ke liye)
-COOKIES_PATH = "/app/data/cookies.json"
-
-client = Client('en-US')
-
-async def init_client():
-    # Folder check karein, agar nahi hai toh banayein
-    os.makedirs(os.path.dirname(COOKIES_PATH), exist_ok=True)
-
-    if os.path.exists(COOKIES_PATH):
-        try:
-            client.load_cookies(COOKIES_PATH)
-            print(f"✅ Cookies loaded from {COOKIES_PATH}")
-        except Exception as e:
-            print(f"⚠️ Cookie load failed, trying fresh login: {e}")
-            await perform_login()
-    else:
-        await perform_login()
-
-async def perform_login():
-    print("🔄 Logging in...")
+@app.get("/tweets")
+def get_tweets(user: str):
     try:
-        await client.login(
-            auth_info_1=USERNAME,
-            auth_info_2=EMAIL,
-            password=PASSWORD
-        )
-        client.save_cookies(COOKIES_PATH)
-        print("✅ Logged in & Cookies saved!")
-    except Exception as e:
-        print(f"❌ Login Failed: {e}")
-
-@app.on_event("startup")
-async def startup_event():
-    await init_client()
-
-@app.get("/get_tweets")
-async def get_tweets(username: str):
-    try:
-        user = await client.get_user_by_screen_name(username)
-        tweets = await user.get_tweets('Tweets', count=5)
+        # Nitter se latest 5 tweets nikalo
+        print(f"Fetching tweets for: {user}")
+        data = scraper.get_tweets(user, mode='user', number=5)
         
-        results = []
-        for tweet in tweets:
-            media_urls = [m['media_url_https'] for m in tweet.media] if tweet.media else []
-            
-            results.append({
-                "id": tweet.id,
-                "text": tweet.full_text,
-                "created_at": tweet.created_at,
-                "media": media_urls,
-                "url": f"https://x.com/{username}/status/{tweet.id}",
-                "user": {"name": user.name, "username": user.screen_name}
-            })
-            
-        return {"success": True, "tweets": results}
+        if not data or 'tweets' not in data:
+            return {"error": "No tweets found or User blocked"}
+
+        clean_tweets = []
+        for tweet in data['tweets']:
+            # Sirf woh tweets jisme text ya image ho
+            if tweet['is-retweet'] is False:
+                clean_tweets.append({
+                    "tweet_id": tweet['link'].split('/')[-1],
+                    "text": tweet['text'],
+                    "date": tweet['date'],
+                    "images": tweet['pictures'],
+                    "url": tweet['link']
+                })
+        
+        return clean_tweets
 
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
